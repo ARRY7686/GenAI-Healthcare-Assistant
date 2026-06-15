@@ -1,7 +1,7 @@
 import { Plus } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
-export default function ChatBubble({ role, content, timestamp }) {
+export default function ChatBubble({ role, content, timestamp, rationale }) {
   const isUser = role === 'user'
 
   return (
@@ -24,6 +24,14 @@ export default function ChatBubble({ role, content, timestamp }) {
         >
           {content}
         </div>
+
+        {/* Feature #2 — every adaptive question carries its clinical rationale */}
+        {rationale && !isUser && (
+          <div className="text-xs text-muted-foreground bg-accent/40 border rounded-lg px-3 py-1.5 max-w-full">
+            <span className="font-medium text-foreground/70">Why I&apos;m asking: </span>
+            {rationale}
+          </div>
+        )}
 
         {timestamp && (
           <p className="text-xs text-muted-foreground">{timestamp}</p>

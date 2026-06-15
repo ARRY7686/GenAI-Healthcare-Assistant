@@ -1,33 +1,34 @@
 import { cn } from '@/lib/utils'
 
+// Tier codes mirror the backend (app/domain/tiers.py) — India-localized (112 / 108).
 const URGENCY_CONFIG = {
-  emergency: {
+  EMERGENCY_NOW: {
     label: 'Emergency',
-    subtext: 'Call 999 / Emergency Services Now',
+    subtext: 'Call 112 / 108 now',
     className: 'bg-red-50 text-red-700 border-red-200',
     dotClass: 'bg-red-500 animate-pulse',
   },
-  ae_today: {
-    label: 'A&E Today',
-    subtext: 'Go to Accident & Emergency Today',
+  CASUALTY_TODAY: {
+    label: 'Casualty Today',
+    subtext: 'Go to casualty / emergency department today',
     className: 'bg-orange-50 text-orange-700 border-orange-200',
     dotClass: 'bg-orange-500',
   },
-  gp_urgent: {
-    label: 'GP Urgent',
-    subtext: 'Urgent GP Appointment Needed',
+  PHYSICIAN_URGENT: {
+    label: 'Physician Urgent',
+    subtext: 'See a physician urgently (today/tomorrow)',
     className: 'bg-amber-50 text-amber-700 border-amber-200',
     dotClass: 'bg-amber-500',
   },
-  gp_routine: {
-    label: 'GP Routine',
-    subtext: 'Book a Routine GP Appointment',
+  PHYSICIAN_ROUTINE: {
+    label: 'Physician Routine',
+    subtext: 'Book a routine physician visit',
     className: 'bg-sky-50 text-sky-700 border-sky-200',
     dotClass: 'bg-sky-500',
   },
-  self_care: {
+  SELF_CARE: {
     label: 'Self-Care',
-    subtext: 'Self-Care with Monitoring',
+    subtext: 'Self-care with monitoring',
     className: 'bg-emerald-50 text-emerald-700 border-emerald-200',
     dotClass: 'bg-emerald-500',
   },

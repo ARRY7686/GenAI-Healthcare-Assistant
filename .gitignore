@@ -1,10 +1,12 @@
-# ── Python / Flask ────────────────────────────────────────────────────────────
+# ── Python / FastAPI ──────────────────────────────────────────────────────────
 backend/.venv/
 backend/__pycache__/
 backend/**/__pycache__/
 backend/*.pyc
 backend/*.pyo
 backend/.env
+backend/.pytest_cache/
+backend/data/
 *.egg-info/
 
 # ── Node / React ──────────────────────────────────────────────────────────────
@@ -14,6 +16,12 @@ frontend/.env
 frontend/.env.local
 frontend/.env.production
 
+# ── Playwright (frontend e2e) ─────────────────────────────────────────────────
+frontend/test-results/
+frontend/playwright-report/
+frontend/blob-report/
+frontend/e2e/__screenshots__/
+
 # ── OS / Editor ───────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
@@ -21,3 +29,6 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+
+# LibreOffice / Office lock files
+.~lock.*#
