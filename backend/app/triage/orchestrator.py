@@ -1,59 +1,41 @@
-"""Triage orchestrator — Feature #2: Adaptive Questioning.
 
-This is the clinical-decision loop that drives the conversation. Each turn it ingests the
-patient's message, updates the canonical PatientCase (intake — feature #1), and decides
-whether to ask ONE more clarifying question or that enough information has been collected.
-
-Scope of THIS feature (#2): the adaptive-questioning loop only. It deliberately does NOT
-produce an urgency tier, care pathway, patient summary, or the deterministic safety
-override — those are owned by features #3/#4/#5/#6 and are stubbed elsewhere. When the
-engine has enough information, `ask_step` returns `is_complete=True` and the downstream
-`/api/triage/assess` endpoint (feature #3) takes over.
-
-The model (real or mock) chooses the single most informative question to ask and supplies a
-short clinical rationale for it; both the question and its rationale are recorded on the
-PatientCase so the adaptive path is fully traceable.
-"""
 
 from __future__ import annotations
 
+import hashlib
+
 from pydantic import BaseModel
 
+from ..audit import AuditLogger
+from ..clinical import care_pathway_for
 from ..config import Settings
 from ..domain import (
+    CONSERVATIVE_FALLBACK_TIER,
+    TIER_TEXT,
+    Disposition,
     Duration,
     Onset,
     PatientCase,
     QAEntry,
+    ScopeStatus,
     Severity,
     Symptom,
     SymptomStatus,
+    Tier,
+    most_urgent,
 )
 from ..llm import LLMFailure, LLMGateway, build_provider
-from ..llm.schema import LLMExtractedSymptom
-
-OPENING_QUESTION = "What is your main symptom or concern today?"
-
-# Concise triage system prompt. The offline mock ignores it; it guides real providers once
-# they are wired in. Deeper guardrail prompting is feature #6's responsibility.
-SYSTEM_PROMPT = (
-    "You are a careful clinical triage assistant for adults in India. Collect the patient's "
-    "symptoms through a short, adaptive conversation. Each turn, extract any symptoms mentioned "
-    "(id, label, status, severity, onset, duration) and decide whether to ASK one more clarifying "
-    "question or that you have enough to stop. Ask the single most informative question that would "
-    "best narrow the urgency assessment, and always give a short clinical rationale for why you are "
-    "asking it. This is triage signposting, not a diagnosis."
-)
+from ..llm.schema import LLMExtractedSymptom, LLMTriageOutput
+from ..safety import build_system_prompt
 
 
-class AskResult(BaseModel):
-    """Outcome of one adaptive-questioning turn (feature #2)."""
-
-    is_complete: bool  # True once enough info is collected → hand off to urgency assessment
-    question: str | None = None  # next clarifying question (None when complete)
-    rationale: str | None = None  # why that question was asked (adaptive-questioning evidence)
-    progress: int = 0  # 0–100 intake progress indicator
-    fail_closed: bool = False  # True if the LLM failed and intake stopped conservatively
+class TurnResult(BaseModel):
+    kind: str  # "question" | "disposition" | "refusal"
+    message: str
+    question_rationale: str | None = None
+    disposition: Disposition | None = None
+    scope_status: str = "ok"
+    fail_closed: bool = False
 
 
 def _enum(cls, value, default):
@@ -76,29 +58,30 @@ def _to_symptom(s: LLMExtractedSymptom) -> Symptom:
 
 
 class TriageEngine:
-    def __init__(self, gateway: LLMGateway, settings: Settings) -> None:
+    def __init__(self, gateway: LLMGateway, settings: Settings, audit: AuditLogger) -> None:
         self._gateway = gateway
         self._settings = settings
+        self._audit = audit
+        self._system_prompt = build_system_prompt(settings.prompt_version)
+        self._prompt_sha = hashlib.sha256(self._system_prompt.encode("utf-8")).hexdigest()[:12]
         self._max_turns = settings.max_clarifying_turns
 
-    @staticmethod
-    def opening_question() -> str:
-        return OPENING_QUESTION
+    def log_consent(self, case: PatientCase) -> None:
+        """Record an audit event when consent is accepted (provenance for processing basis)."""
+        self._audit.log_consent(case)
 
-    def ask_step(self, case: PatientCase, transcript: list[dict], user_message: str) -> AskResult:
-        """Ingest one patient message and decide: ask another clarifying question, or stop."""
+    def step(self, case: PatientCase, transcript: list[dict], user_message: str) -> TurnResult:
         transcript.append({"role": "user", "content": user_message})
         case.turns += 1
-        case.prompt_version = self._settings.prompt_version
+        # Truthful provenance: stamp the resolved model id when a real provider ran, else "mock".
         provider = self._gateway.provider_name
         case.model_version = provider if provider == "mock" else self._settings.resolve_model()
-
-        # Anchor the presenting complaint on the first message; record the patient's answer to
-        # the clarifying question we asked last turn (provenance for the adaptive loop).
-        if case.presenting_complaint is None:
-            case.presenting_complaint = user_message
+        case.prompt_version = self._settings.prompt_version
+        # Record the patient's answer to the pending clarifying question (provenance/timeline).
         if case.question_log and case.question_log[-1].answer is None:
             case.question_log[-1].answer = user_message
+        if case.presenting_complaint is None:
+            case.presenting_complaint = user_message
 
         context = {
             "turns": case.turns,
@@ -111,36 +94,67 @@ class TriageEngine:
 
         try:
             out = self._gateway.triage_step(
-                system_prompt=SYSTEM_PROMPT, transcript=transcript, case_context=context
+                system_prompt=self._system_prompt, transcript=transcript, case_context=context
             )
         except LLMFailure:
-            # Fail-closed for intake: stop asking and hand off to assessment rather than
-            # dead-ending the conversation. Downstream tier logic (feature #3) errs safe.
-            return AskResult(is_complete=True, progress=100, fail_closed=True)
+            return self._fail_closed(case, transcript, user_message)
 
         self._merge_symptoms(case, out.extracted_symptoms)
         case.add_sticky_red_flags(out.detected_red_flags)
 
-        # Adaptive ask: keep clarifying only while the model wants more info AND we have turn
-        # budget. The model picks the single most informative question (ADR-0006).
-        wants_more = out.action == "ask" and out.next_question is not None
-        if wants_more and case.turns < self._max_turns:
+        emergency = bool(set(out.detected_red_flags) | set(case.sticky_red_flags)) or (
+            out.disposition is not None and out.disposition.tier_code == "EMERGENCY_NOW"
+        )
+
+        # Scope: refuse/redirect minors & pregnancy — but never dead-end an emergency.
+        if out.scope.is_violation and not emergency:
+            return self._refuse(case, transcript, out, user_message)
+
+        # Adaptive questioning (only when not an emergency and within the turn budget).
+        if out.action == "ask" and out.next_question and case.turns < self._max_turns and not emergency:
             q = out.next_question
             case.question_log.append(QAEntry(turn=case.turns, question=q.text, rationale=q.rationale))
             transcript.append({"role": "assistant", "content": q.text})
-            return AskResult(
-                is_complete=False,
-                question=q.text,
-                rationale=q.rationale,
-                progress=self._progress(case.turns),
+            self._audit.log_turn(
+                case=case, output=out, provider_name=provider, event="question",
+                user_message=user_message, prompt_sha=self._prompt_sha,
             )
+            return TurnResult(kind="question", message=q.text, question_rationale=q.rationale)
 
-        # Enough information collected (or out of turn budget) → intake complete.
-        return AskResult(is_complete=True, progress=100)
+        # Decide.
+        if out.disposition is None:
+            # Model wanted to keep asking but we're out of budget, or inconsistent output.
+            return self._fail_closed(case, transcript, user_message)
 
-    def _progress(self, turns: int) -> int:
-        # Coarse progress while still asking; never report 100 until intake is complete.
-        return min(90, round(100 * turns / max(1, self._max_turns)))
+        tier = Tier[out.disposition.tier_code]        
+        active_red_flags = sorted(
+            set(out.disposition.red_flags) | set(out.detected_red_flags) | set(case.sticky_red_flags)
+        )
+        rationale = out.disposition.rationale
+        if active_red_flags and tier != Tier.EMERGENCY_NOW:
+            tier = Tier.EMERGENCY_NOW
+            rationale = (
+                f"Safety clamp: a named red-flag pattern ({', '.join(active_red_flags)}) was present, "
+                f"so urgency was raised to emergency. " + rationale
+            )
+        disposition = self._build_disposition(
+            tier=tier,
+            rationale=rationale,
+            red_flags=active_red_flags or out.disposition.red_flags,
+            contributing=out.disposition.contributing_factors,
+            confidence=out.disposition.confidence,
+            safety_net=out.disposition.safety_net,
+        )
+        case.disposition = disposition
+        msg = self._compose(disposition)
+        transcript.append({"role": "assistant", "content": msg})
+        self._audit.log_turn(
+            case=case, output=out, provider_name=provider, event="disposition",
+            user_message=user_message, prompt_sha=self._prompt_sha,
+        )
+        return TurnResult(kind="disposition", message=msg, disposition=disposition)
+
+   
 
     def _merge_symptoms(self, case: PatientCase, extracted: list[LLMExtractedSymptom]) -> None:
         by_id = {s.id: s for s in case.symptoms}
@@ -161,9 +175,41 @@ class TriageEngine:
                     existing.status = sym.status
             else:
                 case.symptoms.append(sym)
-                by_id[sym.id] = sym
+                by_id[sym.id] = sym    
+
+    def _fail_closed(self, case: PatientCase, transcript: list[dict], user_message: str) -> TurnResult:
+        # ADR-0009: conservative referral, escalated to emergency if a red flag was already seen.
+        tier = CONSERVATIVE_FALLBACK_TIER
+        if case.sticky_red_flags:
+            tier = most_urgent(tier, Tier.EMERGENCY_NOW)
+        disposition = self._build_disposition(
+            tier=tier,
+            rationale="We could not fully complete the automated assessment, so we are erring on the side of caution.",
+            red_flags=list(case.sticky_red_flags),
+            contributing=[],
+            confidence=None,
+            safety_net=(
+                "If you have severe or worsening symptoms — chest pain, trouble breathing, weakness "
+                "on one side, or the worst headache of your life — call 112 now."
+            ),
+            fail_closed=True,
+        )
+        case.disposition = disposition
+        msg = "I couldn't fully assess your symptoms just now, so to be safe:\n" + self._compose(disposition)
+        transcript.append({"role": "assistant", "content": msg})
+        self._audit.log_turn(
+            case=case,
+            output=None,
+            provider_name=self._gateway.provider_name,
+            event="disposition",
+            user_message=user_message,
+            prompt_sha=self._prompt_sha,
+            fail_closed=True,
+        )
+        return TurnResult(kind="disposition", message=msg, disposition=disposition, fail_closed=True)
 
 
 def build_engine(settings: Settings) -> TriageEngine:
     gateway = LLMGateway(build_provider(settings), max_retries=settings.llm_max_retries)
-    return TriageEngine(gateway, settings)
+    audit = AuditLogger(settings.audit_log_path)
+    return TriageEngine(gateway, settings, audit)
