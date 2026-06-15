@@ -5,6 +5,14 @@ from __future__ import annotations
 from pydantic import BaseModel
 
 
+class StartRequest(BaseModel):
+    """Optional consent-gate demographics captured before the chat begins."""
+
+    age_band: str | None = None  # e.g. "under_16", "16-39", "40-64", "65+"
+    sex: str | None = None  # male | female | other | unknown
+    pregnancy_flag: bool | None = None
+
+
 class StartResponse(BaseModel):
     session_id: str
     question: str  # the opening question

@@ -14,9 +14,10 @@ export function detail(err) {
 
 // ── Feature #1 + #2 — intake + adaptive questioning (WIRED) ──────────────────────
 
-export async function startTriage() {
+export async function startTriage(demographics) {
+  // demographics (optional, from the consent gate): { age_band, sex, pregnancy_flag }
   // → { session_id, question, progress }
-  const { data } = await api.post('/api/triage/start')
+  const { data } = await api.post('/api/triage/start', demographics || {})
   return data
 }
 

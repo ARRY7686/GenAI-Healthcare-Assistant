@@ -15,8 +15,9 @@ from functools import lru_cache
 from fastapi import APIRouter, HTTPException
 
 from ..config import get_settings
+from ..domain import Sex
 from ..triage import build_engine
-from .schemas import RespondRequest, RespondResponse, SessionRef, StartResponse
+from .schemas import RespondRequest, RespondResponse, SessionRef, StartRequest, StartResponse
 from .store import build_store
 
 router = APIRouter(prefix="/api")
@@ -44,11 +45,25 @@ def health() -> dict:
 
 
 @router.post("/triage/start", response_model=StartResponse)
-def start_triage() -> StartResponse:
-    """Initialise a new triage session and return the opening question."""
+def start_triage(body: StartRequest | None = None) -> StartResponse:
+    """Initialise a new triage session and return the opening question.
+
+    Optionally accepts consent-gate demographics (age band / sex / pregnancy) and stores
+    them on the case so later features can use them. Server-side consent ENFORCEMENT and the
+    deterministic out-of-scope refusal are feature #6 (Safety Guardrails).
+    """
     session = _store().create()
+    case = session.case
+    if body is not None:
+        case.age_band = body.age_band
+        case.pregnancy_flag = body.pregnancy_flag
+        if body.sex:
+            try:
+                case.sex = Sex(body.sex)
+            except ValueError:
+                case.sex = Sex.UNKNOWN
     return StartResponse(
-        session_id=session.case.session_id,
+        session_id=case.session_id,
         question=_engine().opening_question(),
         progress=0,
     )

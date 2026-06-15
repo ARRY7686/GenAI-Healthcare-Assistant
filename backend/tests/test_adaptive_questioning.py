@@ -37,6 +37,12 @@ def test_start_returns_session_and_opening_question():
     assert body["progress"] == 0
 
 
+def test_start_accepts_consent_demographics():
+    r = client.post("/api/triage/start", json={"age_band": "40-64", "sex": "male", "pregnancy_flag": False})
+    assert r.status_code == 200
+    assert r.json()["session_id"]
+
+
 def test_respond_asks_clarifying_question_with_rationale():
     sid = _start()["session_id"]
     body = _respond(sid, "I have a headache")

@@ -1,9 +1,11 @@
 import { useState, useRef, useEffect } from 'react'
-import { useNavigate, Link } from 'react-router-dom'
-import { Send, RotateCcw, FileText, CheckCircle2, AlertTriangle, Loader2 } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { Send, RotateCcw, FileText, CheckCircle2, AlertTriangle, Loader2, Phone } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
+import { Card, CardContent } from '@/components/ui/card'
 import ChatBubble from '@/components/ChatBubble'
+import ConsentGate from '@/components/ConsentGate'
 import { startTriage, respond, detail } from '@/lib/api'
 
 const now = () =>
@@ -12,21 +14,48 @@ const now = () =>
 let _seq = 0
 const nextId = () => ++_seq
 
+const REFUSALS = {
+  minor:
+    'This assistant is for adults 16 and older. Please ask a parent or guardian to contact a physician or a paediatric service.',
+  pregnancy:
+    "I'm not able to safely triage symptoms during pregnancy here. Please contact an obstetrician / maternity service.",
+}
+
 export default function Triage() {
-  const navigate = useNavigate()
+  const [phase, setPhase] = useState('consent') // 'consent' | 'chat' | 'refused'
+  const [refusalReason, setRefusalReason] = useState(null)
+  const [demographics, setDemographics] = useState(null)
+
   const [sessionId, setSessionId] = useState(null)
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [progress, setProgress] = useState(0)
   const [isComplete, setIsComplete] = useState(false)
-  const [booting, setBooting] = useState(true)
+  const [booting, setBooting] = useState(false)
   const [error, setError] = useState('')
   const bottomRef = useRef(null)
   const textareaRef = useRef(null)
 
-  // Feature #1 — open a triage session and seed the opening question.
-  const boot = async () => {
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages, isLoading])
+
+  // Consent gate → up-front scope refusal, else open the session (feature #1).
+  const onConsent = (d) => {
+    if (d.age_band === 'under_16') return refuse('minor')
+    if (d.pregnancy_flag === true) return refuse('pregnancy')
+    setDemographics(d)
+    setPhase('chat')
+    boot(d)
+  }
+
+  const refuse = (reason) => {
+    setRefusalReason(reason)
+    setPhase('refused')
+  }
+
+  const boot = async (d) => {
     setBooting(true)
     setError('')
     setMessages([])
@@ -34,7 +63,7 @@ export default function Triage() {
     setProgress(0)
     setInput('')
     try {
-      const data = await startTriage()
+      const data = await startTriage(d)
       setSessionId(data.session_id)
       setProgress(data.progress ?? 0)
       setMessages([
@@ -48,13 +77,18 @@ export default function Triage() {
     }
   }
 
-  useEffect(() => {
-    boot()
-  }, [])
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, isLoading])
+  // Back to the consent gate (a fresh triage re-consents).
+  const restart = () => {
+    setPhase('consent')
+    setRefusalReason(null)
+    setDemographics(null)
+    setSessionId(null)
+    setMessages([])
+    setIsComplete(false)
+    setProgress(0)
+    setInput('')
+    setError('')
+  }
 
   // Feature #2 — send the answer, render the next adaptive question (+ rationale).
   const handleSend = async () => {
@@ -96,7 +130,6 @@ export default function Triage() {
         ])
       }
     } catch (e) {
-      // Roll back the optimistic user bubble and restore their text.
       setMessages((prev) => prev.filter((m) => m.id !== userMsg.id))
       setInput(text)
       setError(detail(e))
@@ -107,13 +140,48 @@ export default function Triage() {
   }
 
   const handleKeyDown = (e) => {
-    // Don't submit mid-IME composition (Hindi / Indic input).
     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault()
       handleSend()
     }
   }
 
+  // ── Consent gate ──────────────────────────────────────────────────────────────
+  if (phase === 'consent') {
+    return <ConsentGate onAccept={onConsent} />
+  }
+
+  // ── Out-of-scope refusal (feature #6 surface, client-side for now) ──────────────
+  if (phase === 'refused') {
+    return (
+      <main className="max-w-lg mx-auto px-6 py-10">
+        <Card className="border-amber-200 bg-amber-50">
+          <CardContent className="pt-6 space-y-4">
+            <div className="flex items-center gap-2 text-amber-800 font-semibold">
+              <AlertTriangle className="w-5 h-5" />
+              We can&apos;t continue here
+            </div>
+            <p className="text-sm text-amber-800/90 leading-relaxed">{REFUSALS[refusalReason]}</p>
+            <a
+              href="tel:112"
+              className="inline-flex items-center gap-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-md px-3 py-2 transition-colors"
+            >
+              <Phone className="w-4 h-4" />
+              Emergency? Call 112 now
+            </a>
+            <div>
+              <Button variant="ghost" size="sm" onClick={restart}>
+                <RotateCcw className="w-3.5 h-3.5" />
+                Start over
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      </main>
+    )
+  }
+
+  // ── Chat (features #1 + #2) ─────────────────────────────────────────────────────
   return (
     <div className="flex flex-col" style={{ height: 'calc(100vh - 3.5rem)' }}>
       {/* Header */}
@@ -131,12 +199,7 @@ export default function Triage() {
               View Summary
             </Link>
           </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={boot}
-            className="text-muted-foreground"
-          >
+          <Button variant="ghost" size="sm" onClick={restart} className="text-muted-foreground">
             <RotateCcw className="w-3.5 h-3.5" />
             Reset
           </Button>
@@ -169,11 +232,7 @@ export default function Triage() {
                   </span>
                 )}
               </div>
-              <button
-                className="text-red-400 hover:text-red-600"
-                aria-label="Dismiss"
-                onClick={() => setError('')}
-              >
+              <button className="text-red-400 hover:text-red-600" aria-label="Dismiss" onClick={() => setError('')}>
                 ×
               </button>
             </div>
@@ -187,7 +246,7 @@ export default function Triage() {
           )}
 
           {!booting && !sessionId && error && (
-            <Button onClick={boot} variant="outline" size="sm">
+            <Button onClick={() => boot(demographics)} variant="outline" size="sm">
               <RotateCcw className="w-3.5 h-3.5" />
               Retry
             </Button>
@@ -239,7 +298,7 @@ export default function Triage() {
                     View assessment &amp; summary
                   </Link>
                 </Button>
-                <Button variant="ghost" size="sm" onClick={boot}>
+                <Button variant="ghost" size="sm" onClick={restart}>
                   <RotateCcw className="w-3.5 h-3.5" />
                   Start new check
                 </Button>
