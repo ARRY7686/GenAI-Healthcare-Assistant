@@ -5,11 +5,11 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
 
 const CARE_TIERS = [
-  { label: 'Emergency',  color: 'bg-red-400',    text: 'Call 999 now' },
-  { label: 'A&E Today',  color: 'bg-orange-400',  text: 'Go immediately' },
-  { label: 'GP Urgent',  color: 'bg-amber-400',   text: 'See GP today' },
-  { label: 'GP Routine', color: 'bg-sky-400',     text: 'Book appointment' },
-  { label: 'Self-Care',  color: 'bg-emerald-400', text: 'Manage at home' },
+  { label: 'Emergency',        color: 'bg-red-400',     text: 'Call 112 now' },
+  { label: 'Casualty Today',   color: 'bg-orange-400',  text: 'Go today' },
+  { label: 'Physician Urgent', color: 'bg-amber-400',   text: 'See today' },
+  { label: 'Physician Routine',color: 'bg-sky-400',     text: 'Book a visit' },
+  { label: 'Self-Care',        color: 'bg-emerald-400', text: 'Manage at home' },
 ]
 
 const FEATURES = [
@@ -116,7 +116,7 @@ export default function Home() {
           <p className="text-xs text-amber-800 text-center leading-relaxed">
             <strong>Not a substitute for professional medical advice.</strong>{' '}
             This tool provides guidance only. Always consult a qualified healthcare
-            professional for medical decisions. In an emergency, call 999 immediately.
+            professional for medical decisions. In an emergency, call 112 immediately.
           </p>
         </CardContent>
       </Card>

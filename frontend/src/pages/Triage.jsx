@@ -1,109 +1,204 @@
 import { useState, useRef, useEffect } from 'react'
-import { Link } from 'react-router-dom'
-import { Send, RotateCcw, FileText } from 'lucide-react'
+import { useNavigate, Link } from 'react-router-dom'
+import { Send, RotateCcw, FileText, CheckCircle2, AlertTriangle, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import ChatBubble from '@/components/ChatBubble'
+import { startTriage, respond, detail } from '@/lib/api'
 
 const now = () =>
   new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 
-const INITIAL_MESSAGES = [
-  {
-    id: 1,
-    role: 'assistant',
-    content:
-      "Hello, I'm your triage assistant. I'll ask you a few questions to help guide you to the right level of care. What is your main symptom or concern today?",
-    timestamp: now(),
-  },
-]
+let _seq = 0
+const nextId = () => ++_seq
 
 export default function Triage() {
-  const [messages, setMessages] = useState(INITIAL_MESSAGES)
+  const navigate = useNavigate()
+  const [sessionId, setSessionId] = useState(null)
+  const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
+  const [progress, setProgress] = useState(0)
+  const [isComplete, setIsComplete] = useState(false)
+  const [booting, setBooting] = useState(true)
+  const [error, setError] = useState('')
   const bottomRef = useRef(null)
   const textareaRef = useRef(null)
+
+  // Feature #1 — open a triage session and seed the opening question.
+  const boot = async () => {
+    setBooting(true)
+    setError('')
+    setMessages([])
+    setIsComplete(false)
+    setProgress(0)
+    setInput('')
+    try {
+      const data = await startTriage()
+      setSessionId(data.session_id)
+      setProgress(data.progress ?? 0)
+      setMessages([
+        { id: nextId(), role: 'assistant', content: data.question, timestamp: now() },
+      ])
+    } catch (e) {
+      setSessionId(null)
+      setError(detail(e))
+    } finally {
+      setBooting(false)
+    }
+  }
+
+  useEffect(() => {
+    boot()
+  }, [])
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, isLoading])
 
+  // Feature #2 — send the answer, render the next adaptive question (+ rationale).
   const handleSend = async () => {
     const text = input.trim()
-    if (!text || isLoading) return
+    if (!text || isLoading || isComplete || !sessionId) return
+    setError('')
 
-    const userMsg = { id: Date.now(), role: 'user', content: text, timestamp: now() }
+    const userMsg = { id: nextId(), role: 'user', content: text, timestamp: now() }
     setMessages((prev) => [...prev, userMsg])
     setInput('')
     setIsLoading(true)
 
-    // TODO: Replace with real API call
-    // const { data } = await axios.post('/api/triage/respond', {
-    //   session_id: sessionId,
-    //   message: text,
-    // })
-    // setMessages((prev) => [...prev, { id: Date.now(), role: 'assistant', content: data.question, timestamp: now() }])
-    // if (data.is_complete) navigate('/summary', { state: { session_id: data.session_id } })
-
-    setTimeout(() => {
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: Date.now() + 1,
-          role: 'assistant',
-          content: '[ Connect the Flask /api/triage/respond endpoint here to continue the adaptive questioning. ]',
-          timestamp: now(),
-        },
-      ])
+    try {
+      const data = await respond(sessionId, text)
+      setProgress(data.progress ?? progress)
+      if (data.is_complete) {
+        setIsComplete(true)
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: nextId(),
+            role: 'assistant',
+            content: data.fail_closed
+              ? "Thanks. I couldn't fully finish the questions, but I have enough to move you safely to an assessment."
+              : "Thanks — I have what I need. Let's look at your assessment.",
+            timestamp: now(),
+          },
+        ])
+      } else {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: nextId(),
+            role: 'assistant',
+            content: data.question,
+            rationale: data.rationale,
+            timestamp: now(),
+          },
+        ])
+      }
+    } catch (e) {
+      // Roll back the optimistic user bubble and restore their text.
+      setMessages((prev) => prev.filter((m) => m.id !== userMsg.id))
+      setInput(text)
+      setError(detail(e))
+    } finally {
       setIsLoading(false)
       textareaRef.current?.focus()
-    }, 700)
+    }
   }
 
   const handleKeyDown = (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    // Don't submit mid-IME composition (Hindi / Indic input).
+    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault()
       handleSend()
     }
   }
 
-  const handleReset = () => {
-    setMessages(INITIAL_MESSAGES)
-    setInput('')
-  }
-
   return (
     <div className="flex flex-col" style={{ height: 'calc(100vh - 3.5rem)' }}>
-
       {/* Header */}
       <div className="border-b bg-card/80 backdrop-blur-sm px-6 py-3 flex items-center justify-between flex-shrink-0">
         <div>
           <h1 className="text-sm font-semibold">Symptom Check</h1>
-          <p className="text-xs text-muted-foreground mt-0.5">Answer a few questions to get care guidance</p>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Answer a few questions to get care guidance
+          </p>
         </div>
         <div className="flex items-center gap-2">
           <Button asChild variant="ghost" size="sm">
-            <Link to="/summary">
+            <Link to="/summary" state={{ session_id: sessionId }}>
               <FileText className="w-3.5 h-3.5" />
               View Summary
             </Link>
           </Button>
-          <Button variant="ghost" size="sm" onClick={handleReset} className="text-muted-foreground">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={boot}
+            className="text-muted-foreground"
+          >
             <RotateCcw className="w-3.5 h-3.5" />
             Reset
           </Button>
         </div>
       </div>
 
+      {/* Progress (feature #2) */}
+      <div className="h-1 bg-muted flex-shrink-0">
+        <div
+          className="h-1 bg-primary transition-all duration-500"
+          style={{ width: `${progress}%` }}
+        />
+      </div>
+
       {/* Messages */}
       <div className="flex-1 overflow-y-auto scrollbar-hide">
         <div className="max-w-2xl mx-auto px-4 py-6 space-y-4">
+          {error && (
+            <div
+              role="alert"
+              className="flex items-start gap-2 text-sm bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2"
+            >
+              <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+              <div className="flex-1">
+                {error}
+                {!sessionId && (
+                  <span className="block text-xs text-red-500/80 mt-1">
+                    Make sure the backend is running:{' '}
+                    <code>uvicorn app.main:app --port 8000</code>
+                  </span>
+                )}
+              </div>
+              <button
+                className="text-red-400 hover:text-red-600"
+                aria-label="Dismiss"
+                onClick={() => setError('')}
+              >
+                ×
+              </button>
+            </div>
+          )}
+
+          {booting && (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              Starting your symptom check…
+            </div>
+          )}
+
+          {!booting && !sessionId && error && (
+            <Button onClick={boot} variant="outline" size="sm">
+              <RotateCcw className="w-3.5 h-3.5" />
+              Retry
+            </Button>
+          )}
+
           {messages.map((msg) => (
             <ChatBubble
               key={msg.id}
               role={msg.role}
               content={msg.content}
+              rationale={msg.rationale}
               timestamp={msg.timestamp}
             />
           ))}
@@ -128,32 +223,56 @@ export default function Triage() {
         </div>
       </div>
 
-      {/* Input */}
+      {/* Footer — composer while collecting, completion panel once done */}
       <div className="flex-shrink-0 border-t bg-card/80 backdrop-blur-sm">
         <div className="max-w-2xl mx-auto px-4 py-3">
-          <div className="flex gap-2 items-end">
-            <Textarea
-              ref={textareaRef}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="Describe your symptoms…"
-              rows={1}
-              className="flex-1 resize-none min-h-[40px] max-h-[120px] overflow-y-auto py-2.5 text-sm"
-            />
-            <Button
-              onClick={handleSend}
-              disabled={!input.trim() || isLoading}
-              size="icon"
-              className="flex-shrink-0 h-10 w-10"
-              aria-label="Send"
-            >
-              <Send className="w-4 h-4" />
-            </Button>
-          </div>
-          <p className="text-xs text-muted-foreground text-center mt-2">
-            Enter to send · Shift+Enter for new line
-          </p>
+          {isComplete ? (
+            <div className="flex flex-col sm:flex-row sm:items-center gap-3 py-1">
+              <div className="flex items-center gap-2 text-sm font-medium text-emerald-700 flex-1">
+                <CheckCircle2 className="w-4 h-4" />
+                Symptom check complete
+              </div>
+              <div className="flex gap-2">
+                <Button asChild size="sm">
+                  <Link to="/summary" state={{ session_id: sessionId }}>
+                    <FileText className="w-3.5 h-3.5" />
+                    View assessment &amp; summary
+                  </Link>
+                </Button>
+                <Button variant="ghost" size="sm" onClick={boot}>
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  Start new check
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="flex gap-2 items-end">
+                <Textarea
+                  ref={textareaRef}
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder="Describe your symptoms…"
+                  rows={1}
+                  disabled={booting || !sessionId || isLoading}
+                  className="flex-1 resize-none min-h-[40px] max-h-[120px] overflow-y-auto py-2.5 text-sm"
+                />
+                <Button
+                  onClick={handleSend}
+                  disabled={!input.trim() || isLoading || booting || !sessionId}
+                  size="icon"
+                  className="flex-shrink-0 h-10 w-10"
+                  aria-label="Send"
+                >
+                  <Send className="w-4 h-4" />
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground text-center mt-2">
+                Enter to send · Shift+Enter for new line · Triage guidance, not a diagnosis
+              </p>
+            </>
+          )}
         </div>
       </div>
     </div>
