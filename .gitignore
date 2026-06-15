@@ -16,6 +16,12 @@ frontend/.env
 frontend/.env.local
 frontend/.env.production
 
+# ── Playwright (frontend e2e) ─────────────────────────────────────────────────
+frontend/test-results/
+frontend/playwright-report/
+frontend/blob-report/
+frontend/e2e/__screenshots__/
+
 # ── OS / Editor ───────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
