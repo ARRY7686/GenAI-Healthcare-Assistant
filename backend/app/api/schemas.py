@@ -35,5 +35,19 @@ class RespondResponse(BaseModel):
     fail_closed: bool = False
 
 
+class AssessResponse(BaseModel):
+    """Feature #3 — urgency stratification result for a session."""
+
+    session_id: str
+    tier: str  # tier code, e.g. "PHYSICIAN_URGENT" (matches the frontend UrgencyBadge keys)
+    headline: str
+    action: str
+    rationale: str
+    red_flags: list[str] = []
+    contributing_factors: list[str] = []
+    confidence: float | None = None
+    safety_net: str = ""
+
+
 class SessionRef(BaseModel):
     session_id: str

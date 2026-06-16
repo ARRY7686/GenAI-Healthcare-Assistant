@@ -15,9 +15,16 @@ from functools import lru_cache
 from fastapi import APIRouter, HTTPException
 
 from ..config import get_settings
-from ..domain import Sex
+from ..domain import TIER_TEXT, Sex
 from ..triage import build_engine
-from .schemas import RespondRequest, RespondResponse, SessionRef, StartRequest, StartResponse
+from .schemas import (
+    AssessResponse,
+    RespondRequest,
+    RespondResponse,
+    SessionRef,
+    StartRequest,
+    StartResponse,
+)
 from .store import build_store
 
 router = APIRouter(prefix="/api")
@@ -95,12 +102,29 @@ def respond_to_triage(body: RespondRequest) -> RespondResponse:
     )
 
 
-@router.post("/triage/assess")
-def assess_urgency(body: SessionRef) -> dict:
-    """Feature #3 — Urgency Stratification. Not implemented in the feature-2 PR."""
-    raise HTTPException(
-        status_code=501,
-        detail="Urgency stratification (feature #3) is not implemented yet.",
+@router.post("/triage/assess", response_model=AssessResponse)
+def assess_urgency(body: SessionRef) -> AssessResponse:
+    """Feature #3 — Urgency Stratification: classify the collected case into one of five tiers."""
+    with _store().session(body.session_id) as session:
+        if session is None:
+            raise HTTPException(status_code=404, detail="session not found")
+        case = session.case
+        if not case.symptoms and not case.presenting_complaint:
+            raise HTTPException(
+                status_code=409, detail="no symptoms collected yet; run the symptom check first"
+            )
+        disposition = _engine().assess(case)
+    text = TIER_TEXT[disposition.tier]
+    return AssessResponse(
+        session_id=body.session_id,
+        tier=disposition.tier.name,
+        headline=text["headline"],
+        action=text["action"],
+        rationale=disposition.rationale,
+        red_flags=disposition.red_flags,
+        contributing_factors=disposition.contributing_factors,
+        confidence=disposition.confidence,
+        safety_net=disposition.safety_net,
     )
 
 
