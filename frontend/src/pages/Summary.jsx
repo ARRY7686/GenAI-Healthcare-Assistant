@@ -5,14 +5,14 @@ import { Button } from '@/components/ui/button'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
 import { cn } from '@/lib/utils'
-import { assessUrgency } from '@/lib/api'
+import { assessUrgency, getSummary } from '@/lib/api'
 import DispositionCard from '@/components/DispositionCard'
 import CarePathwayPanel from '@/components/CarePathwayPanel'
 import EmergencyBanner from '@/components/EmergencyBanner'
 import PendingTag from '@/components/PendingTag'
 
-// ── SAMPLE data — the assessment (#3) and summary (#5) backends aren't integrated yet.
-//    These illustrate the finished layout; real data drops in once those features land. ──
+// ── SAMPLE data — shown only in PREVIEW mode (opened without a live session) so every
+//    state is visible. With a real session, the live backend (#3 + #5) drives the page. ──
 const SAMPLE = {
   routine: {
     disposition: {
@@ -36,8 +36,8 @@ const SAMPLE = {
     },
     summary: {
       presenting_complaint: 'Headache',
-      timeline: ['Day 0 — gradual onset', 'Day 2 — persistent, moderate'],
-      associated_symptoms: ['nausea'],
+      timeline: ['headache, onset gradual, for 2 days, severity moderate'],
+      associated_symptoms: ['headache', 'nausea'],
       history: ['No chronic conditions reported'],
       red_flags: [],
     },
@@ -57,8 +57,8 @@ const SAMPLE = {
     },
     summary: {
       presenting_complaint: 'Chest pain radiating to the left arm with sweating',
-      timeline: ['~30 minutes ago — sudden onset'],
-      associated_symptoms: ['sweating', 'arm pain'],
+      timeline: ['chest pain, onset sudden, severity severe'],
+      associated_symptoms: ['chest pain', 'sweating'],
       history: ['Hypertension'],
       red_flags: ['cardiac_chest_pain'],
     },
@@ -71,44 +71,58 @@ export default function Summary() {
   const [scenario, setScenario] = useState('routine')
 
   const [disposition, setDisposition] = useState(null)
+  const [summary, setSummary] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
 
   useEffect(() => {
-    if (sessionId) {
-      setLoading(true)
-      setError(null)
-      assessUrgency(sessionId)
-        .then((data) => {
-          setDisposition({
-            tier: data.tier_code,
-            rationale: data.rationale,
-            safety_net: data.safety_net,
-            care_pathway: data.care_pathway,
-            fail_closed: data.fail_closed,
-          })
+    if (!sessionId) return
+    let cancelled = false
+    setLoading(true)
+    setError(null)
+    // Assess first (feature #3) so the disposition is stored, then build the summary (#5).
+    assessUrgency(sessionId)
+      .then((assess) => {
+        if (cancelled) return
+        setDisposition({
+          tier: assess.tier_code,
+          rationale: assess.rationale,
+          confidence: assess.confidence,
+          safety_net: assess.safety_net,
+          care_pathway: assess.care_pathway,
+          fail_closed: assess.fail_closed,
         })
-        .catch((err) => {
-          setError(err?.response?.data?.detail || err?.message || 'Failed to fetch assessment')
-        })
-        .finally(() => {
-          setLoading(false)
-        })
+        return getSummary(sessionId)
+      })
+      .then((data) => {
+        if (cancelled || !data) return
+        setSummary(data)
+      })
+      .catch((err) => {
+        if (cancelled) return
+        setError(err?.response?.data?.detail || err?.message || 'Failed to load the assessment')
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
     }
   }, [sessionId])
 
-  if (loading) {
+  if (sessionId && loading) {
     return (
       <main className="max-w-2xl mx-auto px-6 py-20 flex flex-col items-center justify-center gap-3">
         <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
-        <p className="text-sm text-muted-foreground font-medium">Fetching clinical assessment...</p>
+        <p className="text-sm text-muted-foreground font-medium">Building your clinical summary…</p>
       </main>
     )
   }
 
-  const displayDisposition = disposition || SAMPLE[scenario].disposition
-  const displaySummary = SAMPLE[scenario].summary
-  const isEmergency = displayDisposition.tier === 'EMERGENCY_NOW'
+  // Live data when we have a session; sample data only in preview mode.
+  const displayDisposition = sessionId ? disposition : SAMPLE[scenario].disposition
+  const displaySummary = sessionId ? summary : SAMPLE[scenario].summary
+  const isEmergency = displayDisposition?.tier === 'EMERGENCY_NOW'
 
   return (
     <main className="max-w-2xl mx-auto px-6 py-10">
@@ -140,19 +154,18 @@ export default function Summary() {
         </div>
       )}
 
-      {/* Preview notice — these surfaces aren't wired to the backend yet */}
+      {/* Preview notice — opened without a live triage session */}
       {!sessionId && (
         <div className="flex items-start gap-2 text-sm bg-amber-50 border border-amber-200 text-amber-800 rounded-lg px-3 py-2 mb-6">
           <Info className="w-4 h-4 mt-0.5 flex-shrink-0" />
           <div className="flex-1">
-            <span className="font-medium">Preview.</span> Urgency assessment (feature #3) and the
-            patient summary (feature #5) aren&apos;t integrated yet — this shows the finished layout
-            with sample data. The symptom check itself (features #1–2) is live.
+            <span className="font-medium">Preview.</span> This shows the finished layout with sample
+            data. Start a symptom check and open the summary from there to see your real assessment.
           </div>
         </div>
       )}
 
-      {/* Scenario toggle so all states are visible while unwired */}
+      {/* Scenario toggle so all states are visible while in preview */}
       {!sessionId && (
         <div className="flex items-center gap-2 mb-6">
           <span className="text-xs text-muted-foreground">Sample scenario:</span>
@@ -177,98 +190,106 @@ export default function Summary() {
         </div>
       )}
 
-      <div className="space-y-4">
-        {/* Feature #6 — safety banner (emergency routing) */}
-        {isEmergency && <EmergencyBanner pending />}
+      {displayDisposition && displaySummary && (
+        <div className="space-y-4">
+          {/* Feature #6 — deterministic safety override routed this case to emergency */}
+          {isEmergency && <EmergencyBanner />}
 
-        {/* Feature #3 — urgency stratification */}
-        <DispositionCard disposition={displayDisposition} pending={false} />
+          {/* Feature #3 — urgency stratification */}
+          <DispositionCard disposition={displayDisposition} />
 
-        {/* Feature #4 — care pathway guidance */}
-        <CarePathwayPanel carePathway={displayDisposition.care_pathway} pending={false} />
+          {/* Feature #4 — care pathway guidance */}
+          <CarePathwayPanel carePathway={displayDisposition.care_pathway} />
 
-        {/* Feature #5 — clinician summary */}
-        <Card>
-          <CardHeader className="pb-3 flex-row items-center justify-between space-y-0">
-            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">
-              Clinical Summary
-            </p>
-            <PendingTag feature={5} />
-          </CardHeader>
-          <CardContent className="space-y-5">
-            {[
-              { label: 'Presenting Complaint', value: summary.presenting_complaint },
-            ].map(({ label, value }) => (
-              <div key={label}>
-                <p className="text-xs font-medium text-muted-foreground mb-1.5">{label}</p>
-                <p className="text-sm leading-relaxed">{value}</p>
+          {/* Feature #5 — clinician summary */}
+          <Card>
+            <CardHeader className="pb-3">
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">
+                Clinical Summary
+              </p>
+            </CardHeader>
+            <CardContent className="space-y-5">
+              <div>
+                <p className="text-xs font-medium text-muted-foreground mb-1.5">Presenting Complaint</p>
+                <p className="text-sm leading-relaxed">{displaySummary.presenting_complaint || '—'}</p>
               </div>
-            ))}
 
-            <div>
-              <p className="text-xs font-medium text-muted-foreground mb-1.5">Symptom Timeline</p>
-              <ul className="space-y-1">
-                {summary.timeline.map((t) => (
-                  <li key={t} className="text-sm leading-relaxed flex items-start gap-2">
-                    <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/40 mt-1.5 flex-shrink-0" />
-                    {t}
-                  </li>
-                ))}
-              </ul>
-            </div>
-
-            <Separator />
-
-            <div>
-              <p className="text-xs font-medium text-muted-foreground mb-2">Associated Symptoms</p>
-              <div className="flex flex-wrap gap-2">
-                {summary.associated_symptoms.map((s) => (
-                  <span
-                    key={s}
-                    className="text-xs bg-secondary text-secondary-foreground px-2.5 py-1 rounded-full border"
-                  >
-                    {s}
-                  </span>
-                ))}
+              <div>
+                <p className="text-xs font-medium text-muted-foreground mb-1.5">Symptom Timeline</p>
+                {displaySummary.timeline.length > 0 ? (
+                  <ul className="space-y-1">
+                    {displaySummary.timeline.map((t) => (
+                      <li key={t} className="text-sm leading-relaxed flex items-start gap-2">
+                        <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/40 mt-1.5 flex-shrink-0" />
+                        {t}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-sm text-muted-foreground">No symptoms recorded.</p>
+                )}
               </div>
-            </div>
 
-            <div>
-              <p className="text-xs font-medium text-muted-foreground mb-1.5">Relevant History</p>
-              <p className="text-sm leading-relaxed">{summary.history.join('; ')}</p>
-            </div>
+              <Separator />
 
-            <p className="text-[11px] text-muted-foreground border-t pt-3">
-              AI-generated triage — not a diagnosis. Clinician must verify.
-            </p>
-          </CardContent>
-        </Card>
+              <div>
+                <p className="text-xs font-medium text-muted-foreground mb-2">Associated Symptoms</p>
+                {displaySummary.associated_symptoms.length > 0 ? (
+                  <div className="flex flex-wrap gap-2">
+                    {displaySummary.associated_symptoms.map((s) => (
+                      <span
+                        key={s}
+                        className="text-xs bg-secondary text-secondary-foreground px-2.5 py-1 rounded-full border"
+                      >
+                        {s}
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground">None recorded.</p>
+                )}
+              </div>
 
-        {/* Red flags */}
-        <Card className="bg-red-50 border-red-200">
-          <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-red-600 text-sm">
-              <AlertTriangle className="w-4 h-4" />
-              Red Flag Symptoms
-            </CardTitle>
-            <p className="text-xs text-red-500/80">Seek emergency care immediately if these develop</p>
-          </CardHeader>
-          <CardContent>
-            {summary.red_flags.length > 0 ? (
-              <ul className="space-y-2">
-                {summary.red_flags.map((flag) => (
-                  <li key={flag} className="flex items-start gap-2.5 text-sm text-red-700">
-                    <span className="w-1.5 h-1.5 rounded-full bg-red-400 mt-1.5 flex-shrink-0" />
-                    {flag}
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="text-sm text-red-700/70">None recorded for this case.</p>
-            )}
-          </CardContent>
-        </Card>
-      </div>
+              <div>
+                <p className="text-xs font-medium text-muted-foreground mb-1.5">Relevant History</p>
+                <p className="text-sm leading-relaxed">
+                  {displaySummary.history.length > 0 ? displaySummary.history.join('; ') : '—'}
+                </p>
+              </div>
+
+              <p className="text-[11px] text-muted-foreground border-t pt-3">
+                {displaySummary.provenance ||
+                  'AI-generated triage — not a diagnosis. Clinician must verify.'}
+              </p>
+            </CardContent>
+          </Card>
+
+          {/* Red flags */}
+          <Card className="bg-red-50 border-red-200">
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-red-600 text-sm">
+                <AlertTriangle className="w-4 h-4" />
+                Red Flag Symptoms
+              </CardTitle>
+              <p className="text-xs text-red-500/80">Seek emergency care immediately if these develop</p>
+            </CardHeader>
+            <CardContent>
+              {displaySummary.red_flags.length > 0 ? (
+                <ul className="space-y-2">
+                  {displaySummary.red_flags.map((flag) => (
+                    <li key={flag} className="flex items-start gap-2.5 text-sm text-red-700">
+                      <span className="w-1.5 h-1.5 rounded-full bg-red-400 mt-1.5 flex-shrink-0" />
+                      {flag}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-sm text-red-700/70">None recorded for this case.</p>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      )}
 
       {/* Disclaimer */}
       <p className="text-xs text-muted-foreground text-center leading-relaxed mt-8">

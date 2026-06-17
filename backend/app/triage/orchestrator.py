@@ -37,6 +37,7 @@ from ..domain import (
 )
 from ..llm import LLMFailure, LLMGateway, build_provider
 from ..llm.schema import LLMExtractedSymptom
+from ..safety import detect_emergency_patterns
 
 OPENING_QUESTION = "What is your main symptom or concern today?"
 
@@ -149,6 +150,9 @@ class TriageEngine:
         """Deterministic 5-tier urgency classification on the collected PatientCase.
 
         Rules (in priority order):
+        0. Feature #6 — deterministic safety guardrail: hard-coded emergency symptom patterns
+           (e.g. chest pain + arm pain, sudden severe headache, stroke signs) ALWAYS route to
+           EMERGENCY_NOW regardless of any other factor. Runs independently of the LLM.
         1. Any sticky red flag  → EMERGENCY_NOW  (escalate-only, never overridden down)
         2. No symptoms at all   → PHYSICIAN_URGENT (conservative fallback ADR-0009)
         3. Worst present severity drives the tier:
@@ -157,6 +161,10 @@ class TriageEngine:
              mild     → SELF_CARE
              unknown  → PHYSICIAN_URGENT (conservative)
         """
+        # Rule 0 (feature #6): deterministic guardrail. Any hard-coded emergency pattern in the
+        # case evidence is latched onto the sticky red flags so it can never be downgraded later.
+        case.add_sticky_red_flags(detect_emergency_patterns(case))
+
         # Rule 1: red-flag override — always escalates, never self-care
         if case.sticky_red_flags:
             return self._build_assess_disposition(

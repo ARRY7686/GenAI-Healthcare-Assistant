@@ -88,8 +88,9 @@ def test_respond_rejects_empty_message():
     assert r.status_code == 400
 
 
-def test_downstream_features_are_stubbed_501():
+def test_downstream_features_require_intake():
     sid = _start()["session_id"]
-    # Feature #3 (assess) is implemented, so calling it without intake data yields 409 (Conflict).
+    # Features #3 (assess) and #5 (summary) are implemented; without intake data they return
+    # 409 (Conflict) rather than the old 501 stub.
     assert client.post("/api/triage/assess", json={"session_id": sid}).status_code == 409
-    assert client.post("/api/summary", json={"session_id": sid}).status_code == 501
+    assert client.post("/api/summary", json={"session_id": sid}).status_code == 409
