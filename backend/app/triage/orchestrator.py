@@ -21,6 +21,9 @@ from pydantic import BaseModel
 
 from ..config import Settings
 from ..domain import (
+    CONSERVATIVE_FALLBACK_TIER,
+    TIER_TEXT,
+    Disposition,
     Duration,
     Onset,
     PatientCase,
@@ -28,6 +31,8 @@ from ..domain import (
     Severity,
     Symptom,
     SymptomStatus,
+    Tier,
+    most_urgent,
 )
 from ..llm import LLMFailure, LLMGateway, build_provider
 from ..llm.schema import LLMExtractedSymptom
@@ -137,6 +142,76 @@ class TriageEngine:
 
         # Enough information collected (or out of turn budget) → intake complete.
         return AskResult(is_complete=True, progress=100)
+    
+    # Feature #3: 
+    def assess(self, case: PatientCase) -> Disposition:
+        """Deterministic 5-tier urgency classification on the collected PatientCase.
+
+        Rules (in priority order):
+        1. Any sticky red flag  → EMERGENCY_NOW  (escalate-only, never overridden down)
+        2. No symptoms at all   → PHYSICIAN_URGENT (conservative fallback ADR-0009)
+        3. Worst present severity drives the tier:
+             severe   → CASUALTY_TODAY
+             moderate → PHYSICIAN_URGENT
+             mild     → SELF_CARE
+             unknown  → PHYSICIAN_URGENT (conservative)
+        """
+        # Rule 1: red-flag override — always escalates, never self-care
+        if case.sticky_red_flags:
+            return self._build_assess_disposition(
+                tier=most_urgent(CONSERVATIVE_FALLBACK_TIER, Tier.EMERGENCY_NOW),
+                rationale=(
+                    f"Safety clamp: red flag(s) detected "
+                    f"({', '.join(sorted(case.sticky_red_flags))}) — routed to emergency."
+                ),
+                red_flags=list(case.sticky_red_flags),
+            )
+
+        # Rule 2: no symptoms collected yet → conservative
+        if not case.symptoms:
+            return self._build_assess_disposition(
+                tier=CONSERVATIVE_FALLBACK_TIER,
+                rationale="No symptoms recorded; erring on the side of caution.",
+                red_flags=[],
+            )
+
+        # Rule 3: worst-severity wins across all PRESENT symptoms
+        present_severities = [
+            s.severity for s in case.symptoms if s.status == SymptomStatus.PRESENT
+        ]
+        if Severity.SEVERE in present_severities:
+            tier = Tier.CASUALTY_TODAY
+        elif Severity.MODERATE in present_severities:
+            tier = Tier.PHYSICIAN_URGENT
+        elif Severity.MILD in present_severities:
+            tier = Tier.SELF_CARE
+        else:
+            tier = CONSERVATIVE_FALLBACK_TIER  # all UNKNOWN → conservative
+
+        return self._build_assess_disposition(
+            tier=tier,
+            rationale=(
+                f"Worst symptom severity across {len(present_severities)} "
+                f"present symptom(s) recorded during intake."
+            ),
+            red_flags=[],
+        )
+
+    def _build_assess_disposition(
+        self, tier: Tier, rationale: str, red_flags: list[str]
+    ) -> Disposition:
+        """Build a Disposition for the assess() path — no LLM, no care_pathway."""
+        return Disposition(
+            tier=tier,
+            rationale=rationale,
+            red_flags=red_flags,
+            contributing_factors=[],
+            confidence=None,
+            safety_net=TIER_TEXT[tier]["action"],
+            care_pathway=None,
+            fail_closed=False,
+        )
+    
 
     def _progress(self, turns: int) -> int:
         # Coarse progress while still asking; never report 100 until intake is complete.

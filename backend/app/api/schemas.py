@@ -37,3 +37,13 @@ class RespondResponse(BaseModel):
 
 class SessionRef(BaseModel):
     session_id: str
+
+
+class AssessResponse(BaseModel):
+    session_id: str
+    tier_code: str
+    tier_headline: str
+    rationale: str
+    red_flags: list[str] = []
+    safety_net: str
+    fail_closed: bool = False
