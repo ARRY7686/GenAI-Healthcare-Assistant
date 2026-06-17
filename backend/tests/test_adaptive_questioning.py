@@ -88,7 +88,7 @@ def test_respond_rejects_empty_message():
     assert r.status_code == 400
 
 
-def test_downstream_features_are_stubbed_501():
+def test_summary_is_stubbed_501():
     sid = _start()["session_id"]
-    assert client.post("/api/triage/assess", json={"session_id": sid}).status_code == 501
+    # Urgency assessment (feature #3) is now implemented; only the patient summary remains a stub.
     assert client.post("/api/summary", json={"session_id": sid}).status_code == 501
