@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
+from ..domain import CarePathway
+
 
 class StartRequest(BaseModel):
     """Optional consent-gate demographics captured before the chat begins."""
@@ -47,3 +49,4 @@ class AssessResponse(BaseModel):
     red_flags: list[str] = []
     safety_net: str
     fail_closed: bool = False
+    care_pathway: CarePathway | None = None

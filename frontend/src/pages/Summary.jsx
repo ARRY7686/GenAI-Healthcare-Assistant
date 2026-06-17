@@ -1,10 +1,11 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useLocation, Link } from 'react-router-dom'
-import { ChevronLeft, AlertTriangle, Info } from 'lucide-react'
+import { ChevronLeft, AlertTriangle, Info, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
 import { cn } from '@/lib/utils'
+import { assessUrgency } from '@/lib/api'
 import DispositionCard from '@/components/DispositionCard'
 import CarePathwayPanel from '@/components/CarePathwayPanel'
 import EmergencyBanner from '@/components/EmergencyBanner'
@@ -69,8 +70,45 @@ export default function Summary() {
   const sessionId = state?.session_id
   const [scenario, setScenario] = useState('routine')
 
-  const { disposition, summary } = SAMPLE[scenario]
-  const isEmergency = disposition.tier === 'EMERGENCY_NOW'
+  const [disposition, setDisposition] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
+
+  useEffect(() => {
+    if (sessionId) {
+      setLoading(true)
+      setError(null)
+      assessUrgency(sessionId)
+        .then((data) => {
+          setDisposition({
+            tier: data.tier_code,
+            rationale: data.rationale,
+            safety_net: data.safety_net,
+            care_pathway: data.care_pathway,
+            fail_closed: data.fail_closed,
+          })
+        })
+        .catch((err) => {
+          setError(err?.response?.data?.detail || err?.message || 'Failed to fetch assessment')
+        })
+        .finally(() => {
+          setLoading(false)
+        })
+    }
+  }, [sessionId])
+
+  if (loading) {
+    return (
+      <main className="max-w-2xl mx-auto px-6 py-20 flex flex-col items-center justify-center gap-3">
+        <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
+        <p className="text-sm text-muted-foreground font-medium">Fetching clinical assessment...</p>
+      </main>
+    )
+  }
+
+  const displayDisposition = disposition || SAMPLE[scenario].disposition
+  const displaySummary = SAMPLE[scenario].summary
+  const isEmergency = displayDisposition.tier === 'EMERGENCY_NOW'
 
   return (
     <main className="max-w-2xl mx-auto px-6 py-10">
@@ -93,48 +131,61 @@ export default function Summary() {
         </Button>
       </div>
 
-      {/* Preview notice — these surfaces aren't wired to the backend yet */}
-      <div className="flex items-start gap-2 text-sm bg-amber-50 border border-amber-200 text-amber-800 rounded-lg px-3 py-2 mb-6">
-        <Info className="w-4 h-4 mt-0.5 flex-shrink-0" />
-        <div className="flex-1">
-          <span className="font-medium">Preview.</span> Urgency assessment (feature #3) and the
-          patient summary (feature #5) aren&apos;t integrated yet — this shows the finished layout
-          with sample data. The symptom check itself (features #1–2) is live.
+      {error && (
+        <div className="flex items-start gap-2 text-sm bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 mb-6">
+          <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+          <div className="flex-1">
+            <span className="font-semibold">Error.</span> {error}
+          </div>
         </div>
-      </div>
+      )}
+
+      {/* Preview notice — these surfaces aren't wired to the backend yet */}
+      {!sessionId && (
+        <div className="flex items-start gap-2 text-sm bg-amber-50 border border-amber-200 text-amber-800 rounded-lg px-3 py-2 mb-6">
+          <Info className="w-4 h-4 mt-0.5 flex-shrink-0" />
+          <div className="flex-1">
+            <span className="font-medium">Preview.</span> Urgency assessment (feature #3) and the
+            patient summary (feature #5) aren&apos;t integrated yet — this shows the finished layout
+            with sample data. The symptom check itself (features #1–2) is live.
+          </div>
+        </div>
+      )}
 
       {/* Scenario toggle so all states are visible while unwired */}
-      <div className="flex items-center gap-2 mb-6">
-        <span className="text-xs text-muted-foreground">Sample scenario:</span>
-        {[
-          { key: 'routine', label: 'Routine' },
-          { key: 'emergency', label: 'Emergency' },
-        ].map(({ key, label }) => (
-          <button
-            key={key}
-            onClick={() => setScenario(key)}
-            className={cn(
-              'text-xs px-3 py-1 rounded-full border transition-colors',
-              scenario === key
-                ? 'bg-foreground text-background border-foreground'
-                : 'text-muted-foreground hover:bg-accent'
-            )}
-          >
-            {label}
-          </button>
-        ))}
-        <PendingTag />
-      </div>
+      {!sessionId && (
+        <div className="flex items-center gap-2 mb-6">
+          <span className="text-xs text-muted-foreground">Sample scenario:</span>
+          {[
+            { key: 'routine', label: 'Routine' },
+            { key: 'emergency', label: 'Emergency' },
+          ].map(({ key, label }) => (
+            <button
+              key={key}
+              onClick={() => setScenario(key)}
+              className={cn(
+                'text-xs px-3 py-1 rounded-full border transition-colors',
+                scenario === key
+                  ? 'bg-foreground text-background border-foreground'
+                  : 'text-muted-foreground hover:bg-accent'
+              )}
+            >
+              {label}
+            </button>
+          ))}
+          <PendingTag />
+        </div>
+      )}
 
       <div className="space-y-4">
         {/* Feature #6 — safety banner (emergency routing) */}
         {isEmergency && <EmergencyBanner pending />}
 
         {/* Feature #3 — urgency stratification */}
-        <DispositionCard disposition={disposition} pending />
+        <DispositionCard disposition={displayDisposition} pending={false} />
 
         {/* Feature #4 — care pathway guidance */}
-        <CarePathwayPanel carePathway={disposition.care_pathway} pending />
+        <CarePathwayPanel carePathway={displayDisposition.care_pathway} pending={false} />
 
         {/* Feature #5 — clinician summary */}
         <Card>

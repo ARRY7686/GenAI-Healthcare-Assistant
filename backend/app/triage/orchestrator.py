@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
+from ..clinical import care_pathway_for
 from ..config import Settings
 from ..domain import (
     CONSERVATIVE_FALLBACK_TIER,
@@ -200,7 +201,8 @@ class TriageEngine:
     def _build_assess_disposition(
         self, tier: Tier, rationale: str, red_flags: list[str]
     ) -> Disposition:
-        """Build a Disposition for the assess() path — no LLM, no care_pathway."""
+        """Build a Disposition for the assess() path — with care_pathway."""
+        care = care_pathway_for(tier, red_flags)
         return Disposition(
             tier=tier,
             rationale=rationale,
@@ -208,7 +210,7 @@ class TriageEngine:
             contributing_factors=[],
             confidence=None,
             safety_net=TIER_TEXT[tier]["action"],
-            care_pathway=None,
+            care_pathway=care,
             fail_closed=False,
         )
     
