@@ -146,4 +146,33 @@ def test_assess_api_flow():
     assert data["rationale"] != ""
     assert data["safety_net"] != ""
 
+
+def test_care_pathway_guidance():
+    eng = _engine()
+    case = _new_case()
+    case.symptoms.append(Symptom(
+        id="sore_throat", label="sore throat",
+        severity=Severity.MILD, status=SymptomStatus.PRESENT
+    ))
+    d = eng.assess(case)
+    assert d.care_pathway is not None
+    assert "Rest, stay hydrated" in d.care_pathway.what_to_do
+    assert "pharmacist" in d.care_pathway.what_to_do
+    assert "Chest pain" in d.care_pathway.red_flags_to_watch[1]
+
+
+def test_self_harm_gets_crisis_pathway():
+    eng = _engine()
+    case = _new_case()
+    case.symptoms.append(Symptom(
+        id="feeling_down", label="feeling down",
+        severity=Severity.MILD, status=SymptomStatus.PRESENT
+    ))
+    case.add_sticky_red_flags(["self_harm_crisis"])
+    d = eng.assess(case)
+    assert d.tier == Tier.EMERGENCY_NOW
+    assert d.care_pathway is not None
+    assert "Tele-MANAS" in d.care_pathway.what_to_do
+
+
 # ── End Feature #3 ────────────────────────────────────────────────────────

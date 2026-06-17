@@ -124,6 +124,7 @@ def assess_urgency(body: SessionRef) -> AssessResponse:
         red_flags=disposition.red_flags,
         safety_net=disposition.safety_net,
         fail_closed=disposition.fail_closed,
+        care_pathway=disposition.care_pathway,
     )
 
 
