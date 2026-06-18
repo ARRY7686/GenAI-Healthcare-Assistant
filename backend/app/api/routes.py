@@ -15,7 +15,8 @@ from functools import lru_cache
 from fastapi import APIRouter, HTTPException
 
 from ..config import get_settings
-from ..domain import Sex
+from ..domain import ClinicianSummary, Sex
+from ..handoff import build_clinician_summary
 from ..triage import build_engine
 from .schemas import AssessResponse, RespondRequest, RespondResponse, SessionRef, StartRequest, StartResponse
 from .store import build_store
@@ -128,10 +129,24 @@ def assess_urgency(body: SessionRef) -> AssessResponse:
     )
 
 
-@router.post("/summary")
-def generate_summary(body: SessionRef) -> dict:
-    """Feature #5 — Patient Summary. Not implemented in the feature-2 PR."""
-    raise HTTPException(
-        status_code=501,
-        detail="Patient summary (feature #5) is not implemented yet.",
-    )
+@router.post("/summary", response_model=ClinicianSummary)
+def generate_summary(body: SessionRef) -> ClinicianSummary:
+    """Feature #5 — POST /api/summary — Patient Summary.
+
+    Builds a structured clinician handoff summary (presenting complaint, symptom timeline,
+    associated symptoms, relevant history, and the AI urgency assessment) from the collected
+    PatientCase. If urgency assessment (feature #3) hasn't run yet, it is run first so the
+    summary always carries a disposition.
+    """
+    with _store().session(body.session_id) as session:
+        if session is None:
+            raise HTTPException(status_code=404, detail="session not found")
+        case = session.case
+        if not case.symptoms and not case.presenting_complaint:
+            raise HTTPException(
+                status_code=409,
+                detail="no intake data yet; complete /triage/respond first",
+            )
+        if case.disposition is None:
+            case.disposition = _engine().assess(case)
+        return build_clinician_summary(case)
