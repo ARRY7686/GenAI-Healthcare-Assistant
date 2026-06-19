@@ -1,0 +1,8 @@
+# Python deps for the Vercel serverless function (api/index.py).
+# Local dev uses backend/requirements.txt; this is the production runtime set.
+# No uvicorn — Vercel provides the ASGI server.
+fastapi>=0.115
+pydantic>=2.7
+pydantic-settings>=2.3
+upstash-redis>=1.2          # durable session store on serverless
+google-generativeai         # real LLM provider (Gemini)

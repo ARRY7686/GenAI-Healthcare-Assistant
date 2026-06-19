@@ -7,5 +7,6 @@ pydantic-settings>=2.3
 pytest>=8.0
 httpx>=0.27          # required by fastapi.testclient.TestClient
 
-# NOTE: real LLM providers are an OPTIONAL follow-up (the app defaults to the offline mock).
-#   anthropic -> pip install "anthropic>=0.40"
+# Real LLM provider (OPTIONAL — the app defaults to the offline mock):
+#   Google Gemini -> pip install google-generativeai
+#   then set TRIAGE_LLM_PROVIDER=gemini and TRIAGE_GEMINI_API_KEY in .env

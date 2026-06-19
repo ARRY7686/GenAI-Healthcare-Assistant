@@ -10,6 +10,8 @@ A durable (SQLite) store is a follow-up; the in-memory store is enough for the M
 
 from __future__ import annotations
 
+import json
+import os
 import threading
 import time
 import uuid
@@ -70,5 +72,63 @@ class InMemorySessionStore:
             yield session  # live object — mutations are already persisted
 
 
-def build_store(settings=None) -> InMemorySessionStore:
+class RedisSessionStore:
+    """Durable session store backed by Upstash Redis (REST) — required on serverless (Vercel),
+    where the in-memory store would lose sessions between function invocations. Reads the Upstash
+    REST credentials that Vercel's marketplace integration injects.
+    """
+
+    def __init__(self, ttl_seconds: int = SESSION_TTL_SECONDS) -> None:
+        url = os.environ.get("KV_REST_API_URL") or os.environ.get("UPSTASH_REDIS_REST_URL")
+        token = os.environ.get("KV_REST_API_TOKEN") or os.environ.get("UPSTASH_REDIS_REST_TOKEN")
+        if not url or not token:
+            raise RuntimeError(
+                "TRIAGE_SESSION_STORE=redis but no Upstash REST credentials found "
+                "(expected KV_REST_API_URL/KV_REST_API_TOKEN or UPSTASH_REDIS_REST_URL/TOKEN)."
+            )
+        from upstash_redis import Redis
+
+        self._redis = Redis(url=url, token=token)
+        self._ttl = ttl_seconds
+
+    @staticmethod
+    def _key(sid: str) -> str:
+        return f"triage:sess:{sid}"
+
+    def _save(self, session: Session) -> None:
+        payload = json.dumps(
+            {"case": session.case.model_dump_json(), "transcript": session.transcript}
+        )
+        self._redis.set(self._key(session.case.session_id), payload, ex=self._ttl)
+
+    def create(self) -> Session:
+        session = Session(case=PatientCase(session_id=uuid.uuid4().hex))
+        self._save(session)
+        return session
+
+    def get(self, sid: str) -> Session | None:
+        raw = self._redis.get(self._key(sid))
+        if not raw:
+            return None
+        data = json.loads(raw)
+        return Session(
+            case=PatientCase.model_validate_json(data["case"]),
+            transcript=data["transcript"],
+        )
+
+    @contextmanager
+    def session(self, sid: str):
+        # Load -> mutate -> save. Redis is the source of truth across serverless invocations;
+        # no distributed lock (per-session triage concurrency is effectively single-user).
+        session = self.get(sid)
+        if session is None:
+            yield None
+            return
+        yield session
+        self._save(session)
+
+
+def build_store(settings=None):
+    if settings is not None and getattr(settings, "session_store", "memory") == "redis":
+        return RedisSessionStore()
     return InMemorySessionStore()
