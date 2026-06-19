@@ -8,11 +8,19 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="TRIAGE_", env_file=".env", extra="ignore")
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def _strip_strings(cls, v):
+        # Env vars set via `echo |` can carry a trailing newline — strip stray whitespace so
+        # values like "gemini\n" don't silently break provider/store selection or the API key.
+        return v.strip() if isinstance(v, str) else v
 
     # --- LLM provider ---
     # "mock" -> deterministic offline provider (default; runs with zero secrets).
@@ -27,7 +35,7 @@ class Settings(BaseSettings):
     model_id: str | None = None
     anthropic_model: str = "claude-sonnet-4-6"
     openai_model: str = "gpt-4o"
-    gemini_model: str = "gemini-2.0-flash"
+    gemini_model: str = "gemini-2.5-flash"
 
     prompt_version: str = "v1"
     llm_timeout_seconds: float = 20.0
@@ -35,6 +43,9 @@ class Settings(BaseSettings):
 
     # --- Adaptive questioning (feature #2) ---
     max_clarifying_turns: int = 6  # hard ceiling on clarifying questions per session
+
+    # --- Session store ---
+    session_store: str = "memory"  # "memory" (default) | "redis" (Upstash — required on serverless)
 
     # --- API ---
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"

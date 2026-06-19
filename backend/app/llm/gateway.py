@@ -22,11 +22,18 @@ def build_provider(settings: Settings) -> LLMProvider:
         from .mock_provider import MockLLMProvider
 
         return MockLLMProvider()
-    # Real providers are not bundled in the feature-2 PR yet. Add the corresponding
-    # provider module (e.g. app/llm/anthropic_provider.py) and wire it in here.
+    if provider == "gemini":
+        from .gemini_provider import GeminiLLMProvider
+
+        return GeminiLLMProvider(
+            api_key=settings.gemini_api_key or "",
+            model_id=settings.resolve_model(),
+            timeout=settings.llm_timeout_seconds,
+        )
+    # anthropic / openai aren't bundled in this build — add the provider module to wire them.
     raise NotImplementedError(
         f"LLM provider {provider!r} is not wired in this build. "
-        "Set TRIAGE_LLM_PROVIDER=mock (the default), or add the provider module."
+        "Set TRIAGE_LLM_PROVIDER=mock (default) or gemini."
     )
 
 
